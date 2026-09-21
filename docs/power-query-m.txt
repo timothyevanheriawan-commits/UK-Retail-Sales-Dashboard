@@ -1,0 +1,128 @@
+// ============================================================
+// POWER QUERY M SCRIPT — UK Retail Sales Dashboard
+// Paste each section into a new blank query via
+// Home > Advanced Editor, then rename the query to match
+// the header comment.
+// ============================================================
+
+// ------------------------------------------------------------
+// QUERY: FactSales
+// Source: Online Retail dataset, split across two CSVs
+// (one per year). Update both paths before running — yours are
+// in Downloads\archive (3)\.
+// ------------------------------------------------------------
+let
+    Source09_10 = Csv.Document(
+        File.Contents("C:\Users\<you>\Downloads\archive (3)\uk_online_retail_09-10.csv"),
+        [Delimiter=",", Columns=8, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    Source10_11 = Csv.Document(
+        File.Contents("C:\Users\<you>\Downloads\archive (3)\uk_online_retail_10-11.csv"),
+        [Delimiter=",", Columns=8, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    Promoted09_10 = Table.PromoteHeaders(Source09_10, [PromoteAllScalars=true]),
+    Promoted10_11 = Table.PromoteHeaders(Source10_11, [PromoteAllScalars=true]),
+    // Both files should share the same 8 column headers — if
+    // Power Query complains about mismatched columns here, open
+    // each file and confirm the header row spelling/order matches
+    Combined = Table.Combine({Promoted09_10, Promoted10_11}),
+    // This dataset's real headers are Invoice, Price, and
+    // "Customer ID" (with a space) — renamed here so every
+    // downstream step, the DAX measures, and the relationships
+    // in the setup guide all match without further edits
+    RenamedColumns = Table.RenameColumns(Combined, {
+        {"Invoice", "InvoiceNo"},
+        {"Price", "UnitPrice"},
+        {"Customer ID", "CustomerID"}
+    }),
+    // InvoiceDate must be parsed with an explicit UK culture —
+    // the source is day/month/year, but the default locale reads
+    // it as month/day/year and silently errors on any day > 12
+    ChangedTypeNoDate = Table.TransformColumnTypes(RenamedColumns,{
+        {"InvoiceNo", type text}, {"StockCode", type text},
+        {"Description", type text}, {"Quantity", Int64.Type},
+        {"UnitPrice", type number}, {"CustomerID", Int64.Type},
+        {"Country", type text}
+    }),
+    ChangedType = Table.TransformColumnTypes(ChangedTypeNoDate,
+        {{"InvoiceDate", type datetime}}, "en-GB"),
+    // Drop rows where InvoiceDate failed to parse or was blank
+    FilteredDates = Table.SelectRows(ChangedType, each [InvoiceDate] <> null),
+    // Flag cancellations instead of deleting them — you lose the
+    // returns signal otherwise, which is a real metric on page 3
+    AddIsCancelled = Table.AddColumn(FilteredDates, "IsCancelled",
+        each Text.StartsWith([InvoiceNo], "C"), type logical),
+    AddIsReturn = Table.AddColumn(AddIsCancelled, "IsReturn",
+        each [Quantity] < 0, type logical),
+    // Drop rows with no CustomerID — can't attribute them to
+    // cohort/LTV analysis, keep them out of FactSales but note
+    // the excluded row count for your README
+    FilteredRows = Table.SelectRows(AddIsReturn, each [CustomerID] <> null),
+    AddLineTotal = Table.AddColumn(FilteredRows, "LineTotal",
+        each [Quantity] * [UnitPrice], type number),
+    // DimDate[Date] is a pure date with no time component —
+    // relating it directly to InvoiceDate (a datetime) fails on
+    // almost every row, since 08:26:00 never equals midnight.
+    // This column strips the time so the relationship actually matches.
+    AddInvoiceDateOnly = Table.AddColumn(AddLineTotal, "InvoiceDateOnly",
+        each Date.From([InvoiceDate]), type date)
+in
+    AddInvoiceDateOnly
+
+// ------------------------------------------------------------
+// QUERY: DimDate
+// Generates a full calendar table spanning the invoice date range.
+// Adjust StartDate/EndDate to match your actual dataset span
+// (Online Retail II covers 2009-12-01 to 2011-12-09).
+// ------------------------------------------------------------
+let
+    StartDate = #date(2009,12,1),
+    EndDate = #date(2011,12,31),
+    DayCount = Duration.Days(EndDate - StartDate) + 1,
+    DateList = List.Dates(StartDate, DayCount, #duration(1,0,0,0)),
+    ToTable = Table.FromList(DateList, Splitter.SplitByNothing(), {"Date"}),
+    ChangedType = Table.TransformColumnTypes(ToTable, {{"Date", type date}}),
+    AddYear = Table.AddColumn(ChangedType, "Year", each Date.Year([Date]), Int64.Type),
+    AddQuarter = Table.AddColumn(AddYear, "Quarter", each "Q" & Text.From(Date.QuarterOfYear([Date])), type text),
+    AddMonth = Table.AddColumn(AddQuarter, "Month", each Date.Month([Date]), Int64.Type),
+    AddMonthName = Table.AddColumn(AddMonth, "MonthName", each Date.ToText([Date], "MMMM"), type text),
+    AddMonthYear = Table.AddColumn(AddMonthName, "MonthYear", each Date.ToText([Date], "MMM yyyy"), type text),
+    // Text "MonthYear" sorts alphabetically (Apr, Aug, Dec... before Jan) —
+    // this numeric key is what MonthYear gets sorted BY in the model,
+    // via Column tools > Sort by column
+    AddMonthYearSort = Table.AddColumn(AddMonthYear, "MonthYearSort",
+        each Date.Year([Date]) * 100 + Date.Month([Date]), Int64.Type),
+    AddWeekNum = Table.AddColumn(AddMonthYearSort, "WeekOfYear", each Date.WeekOfYear([Date]), Int64.Type),
+    AddDayOfWeek = Table.AddColumn(AddWeekNum, "DayOfWeek", each Date.ToText([Date], "dddd"), type text),
+    AddFYFlag = Table.AddColumn(AddDayOfWeek, "IsWeekend",
+        each Date.DayOfWeek([Date], Day.Monday) >= 5, type logical)
+in
+    AddFYFlag
+
+// ------------------------------------------------------------
+// QUERY: DimCustomer
+// Deduplicated customer list with first-purchase date, used
+// for new-vs-returning logic on page 2.
+// ------------------------------------------------------------
+let
+    Source = FactSales,
+    Grouped = Table.Group(Source, {"CustomerID", "Country"}, {
+        {"FirstPurchaseDate", each List.Min([InvoiceDate]), type datetime},
+        {"LastPurchaseDate", each List.Max([InvoiceDate]), type datetime},
+        {"TotalOrders", each List.Count(List.Distinct([InvoiceNo])), Int64.Type}
+    })
+in
+    Grouped
+
+// ------------------------------------------------------------
+// QUERY: DimProduct
+// StockCode/Description lookup. This dataset ships no category
+// field — bucket manually via a conditional column, or leave
+// flat and use Description as the only grouping dimension.
+// ------------------------------------------------------------
+let
+    Source = FactSales,
+    Grouped = Table.Group(Source, {"StockCode", "Description"}, {
+        {"UnitPrice", each List.Average([UnitPrice]), type number}
+    }),
+    RemoveDupes = Table.Distinct(Grouped, {"StockCode"})
+in
+    RemoveDupes

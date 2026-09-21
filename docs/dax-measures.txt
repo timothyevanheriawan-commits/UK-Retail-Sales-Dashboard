@@ -1,0 +1,117 @@
+// ============================================================
+// DAX MEASURES — UK Retail Sales Dashboard
+// Create a dedicated measure table first:
+// Modeling > New Table > name it "_Measures", paste:
+//     _Measures = { BLANK() }
+// Then add each measure below via Home > New Measure,
+// with _Measures selected as the home table.
+// ============================================================
+
+// ---------- CORE ----------
+
+Total Revenue =
+SUMX ( FactSales, FactSales[Quantity] * FactSales[UnitPrice] )
+
+Total Orders =
+DISTINCTCOUNT ( FactSales[InvoiceNo] )
+
+Total Customers =
+DISTINCTCOUNT ( FactSales[CustomerID] )
+
+Units Sold =
+SUM ( FactSales[Quantity] )
+
+AOV =
+DIVIDE ( [Total Revenue], [Total Orders] )
+
+Returns Revenue =
+CALCULATE ( [Total Revenue], FactSales[IsReturn] = TRUE )
+
+Return Rate % =
+DIVIDE ( [Returns Revenue], [Total Revenue] )
+
+// ---------- TIME INTELLIGENCE ----------
+// Requires DimDate marked as the date table:
+// right-click DimDate > Mark as Date Table > select [Date] column
+
+Revenue LY =
+CALCULATE ( [Total Revenue], SAMEPERIODLASTYEAR ( DimDate[Date] ) )
+
+YoY Growth % =
+DIVIDE ( [Total Revenue] - [Revenue LY], [Revenue LY] )
+
+Revenue MTD =
+TOTALMTD ( [Total Revenue], DimDate[Date] )
+
+Revenue QTD =
+TOTALQTD ( [Total Revenue], DimDate[Date] )
+
+Running Total Revenue =
+CALCULATE (
+    [Total Revenue],
+    FILTER (
+        ALLSELECTED ( DimDate[Date] ),
+        DimDate[Date] <= MAX ( DimDate[Date] )
+    )
+)
+
+Prior Month Revenue =
+CALCULATE ( [Total Revenue], DATEADD ( DimDate[Date], -1, MONTH ) )
+
+MoM Growth % =
+DIVIDE ( [Total Revenue] - [Prior Month Revenue], [Prior Month Revenue] )
+
+// ---------- CUSTOMER VALUE ----------
+
+Customer LTV =
+DIVIDE ( [Total Revenue], [Total Customers] )
+
+Avg Orders per Customer =
+DIVIDE ( [Total Orders], [Total Customers] )
+
+// New vs returning depends on DimCustomer[FirstPurchaseDate].
+// A customer counts as "new" in whatever month their first
+// purchase falls in.
+New Customers =
+CALCULATE (
+    DISTINCTCOUNT ( DimCustomer[CustomerID] ),
+    FILTER (
+        DimCustomer,
+        DimCustomer[FirstPurchaseDate] >= MIN ( DimDate[Date] )
+            && DimCustomer[FirstPurchaseDate] <= MAX ( DimDate[Date] )
+    )
+)
+
+Returning Customers =
+[Total Customers] - [New Customers]
+
+Repeat Purchase Rate % =
+DIVIDE (
+    CALCULATE ( DISTINCTCOUNT ( DimCustomer[CustomerID] ), DimCustomer[TotalOrders] > 1 ),
+    [Total Customers]
+)
+
+// ---------- PRODUCT / PARETO ----------
+
+Product Revenue Rank =
+RANKX ( ALL ( DimProduct[Description] ), [Total Revenue], , DESC )
+
+// Cumulative % of revenue, sorted by product rank descending —
+// drives the 80/20 Pareto line on page 3. Add [Product Revenue Rank]
+// as a sort-by column on the visual.
+Cumulative Revenue % =
+VAR CurrentRank = [Product Revenue Rank]
+VAR TotalAllRevenue =
+    CALCULATE ( [Total Revenue], ALL ( DimProduct ) )
+VAR CumulativeRevenue =
+    CALCULATE (
+        [Total Revenue],
+        FILTER ( ALL ( DimProduct[Description] ), [Product Revenue Rank] <= CurrentRank )
+    )
+RETURN
+    DIVIDE ( CumulativeRevenue, TotalAllRevenue )
+
+// ---------- FORMATTING HELPERS ----------
+// Apply as format strings in the Measure tools ribbon, not as
+// separate measures: Revenue → "$#,##0,,K" or "#,##0" depending
+// on currency; percentages → "0.0%"
