@@ -4,6 +4,15 @@ A Power BI dashboard analyzing two years of transaction-level sales data from a 
 
 ![Overview page](screenshots/page1-overview.png)
 
+## Key Findings
+
+Online Retail II dataset (UK gift retailer, Dec 2009 to Dec 2011).
+
+- **16.73M total revenue from about 44K orders**, with an average order value of 380.49.
+- **Revenue is spread across a long tail, not concentrated in a few products.** The top 10 products (led by Regency Cakestand 3 Tier and White Hanging Heart T-Light Holder) add up to roughly 7 to 8% of revenue.
+- **The customer base becomes mostly returning customers.** After the Dec 2009 launch month, new customers fall from roughly half of monthly customers in early 2010 to around 10 to 15% by 2011.
+- **Return rates stay low.** Even the highest-returned product lines sit at about 2% or less.
+
 ## What this answers
 
 - How is revenue trending year over year, and which products and countries drive it?
